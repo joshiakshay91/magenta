@@ -481,29 +481,17 @@ void xhci_handle_transfer_event(xhci_t* xhci, xhci_trb_t* trb) {
 
     uint32_t cc = READ_FIELD(status, EVT_TRB_CC_START, EVT_TRB_CC_BITS);
     uint32_t length = READ_FIELD(status, EVT_TRB_XFER_LENGTH_START, EVT_TRB_XFER_LENGTH_BITS);
-    iotxn_t* txn = NULL;
-
-    // TRB pointer is zero in these cases
-    if (cc != TRB_CC_RING_UNDERRUN && cc != TRB_CC_RING_OVERRUN) {
-        if (control & EVT_TRB_ED) {
-            txn = (iotxn_t *)trb_get_ptr(trb);
-        } else {
-            trb = xhci_read_trb_ptr(ring, trb);
-            for (int i = 0; i < 5 && trb; i++) {
-                if (trb_get_type(trb) == TRB_TRANSFER_EVENT_DATA) {
-                    txn = (iotxn_t *)trb_get_ptr(trb);
-                    break;
-                }
-                trb = xhci_get_next_trb(ring, trb);
-            }
-        }
-    }
 
     mx_status_t result;
     switch (cc) {
         case TRB_CC_SUCCESS:
         case TRB_CC_SHORT_PACKET:
             result = length;
+            break;
+        case TRB_CC_TRB_ERROR:
+            printf("xhci_handle_transfer_event TRB_CC_TRB_ERROR: %08X %08X %08X %08X\n",
+                   ((uint32_t*)trb)[0], ((uint32_t*)trb)[1], ((uint32_t*)trb)[2], ((uint32_t*)trb)[3]);
+            result = MX_ERR_IO;
             break;
         case TRB_CC_STALL_ERROR:
             result = MX_ERR_IO_REFUSED;
@@ -524,9 +512,33 @@ void xhci_handle_transfer_event(xhci_t* xhci, xhci_trb_t* trb) {
             xprintf("ignoring transfer event with cc: %d\n", cc);
             return;
         default:
-            xprintf("Unhandled transfer event condition code, closing peer connection: %d\n", cc);
+            printf("Unhandled transfer event condition code, closing peer connection: %d\n", cc);
             result = MX_ERR_PEER_CLOSED;
             break;
+    }
+
+    iotxn_t* txn = NULL;
+
+    // TRB pointer is zero in these cases
+    if (cc != TRB_CC_RING_UNDERRUN && cc != TRB_CC_RING_OVERRUN) {
+        if (control & EVT_TRB_ED) {
+            txn = (iotxn_t *)trb_get_ptr(trb);
+        } else {
+            trb = xhci_read_trb_ptr(ring, trb);
+            for (uint i = 0; i < TRANSFER_RING_SIZE && trb; i++) {
+                if (trb_get_type(trb) == TRB_TRANSFER_EVENT_DATA) {
+                    txn = (iotxn_t *)trb_get_ptr(trb);
+                    break;
+                }
+                printf("advancing TRB %08X %08X %08X %08X\n",
+                   ((uint32_t*)trb)[0], ((uint32_t*)trb)[1], ((uint32_t*)trb)[2], ((uint32_t*)trb)[3]);
+                trb = xhci_get_next_trb(ring, trb);
+                if (trb_get_type(trb) == TRB_TRANSFER_EVENT_DATA) {
+                    printf("Found Event Data TRB %08X %08X %08X %08X\n",
+                       ((uint32_t*)trb)[0], ((uint32_t*)trb)[1], ((uint32_t*)trb)[2], ((uint32_t*)trb)[3]);
+                }
+            }
+        }
     }
 
     if (!txn) {
